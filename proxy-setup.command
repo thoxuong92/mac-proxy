@@ -229,6 +229,30 @@ stop_service() {
 
 current_ip() { curl -s --max-time 8 https://api.ipify.org 2>/dev/null; }
 
+# ---- iCloud Private Relay: in "on" hoặc "off" (macOS 12 trở lên) ----
+# Đọc giá trị trong domain com.apple.networkserviceproxy, cách làm theo
+# script của Joel Bruner (github.com/brunerd, giấy phép MIT).
+private_relay_state() {
+  if [ "$(sw_vers -productVersion | cut -d. -f1)" -le 11 ]; then echo unknown; return; fi
+  local user uid parentData target keyStatus
+  user="$(stat -f %Su /dev/console)"
+  uid="$(stat -f %u /dev/console)"
+  target=':$objects:1:PrivacyProxyServiceStatus'
+  parentData="$(launchctl asuser "$uid" sudo -u "$user" defaults export com.apple.networkserviceproxy - 2>/dev/null)"
+  if [ -z "$parentData" ]; then echo unknown; return; fi
+  keyStatus="$(/usr/libexec/PlistBuddy -c "print '$target'" /dev/stdin 2>/dev/null <<< "$(plutil -extract NSPServiceStatusManagerInfo xml1 -o - /dev/stdin <<< "$parentData" | xmllint --xpath "string(//data)" - | base64 --decode | plutil -convert xml1 - -o -)")"
+  if [ "$keyStatus" = "1" ]; then echo on; else echo off; fi
+}
+
+# ---- Kiểm tra và cảnh báo iCloud Private Relay ----
+check_private_relay() {
+  case "$(private_relay_state)" in
+    on)  warn "iCloud Private Relay đang BẬT, dễ xung đột với proxy. Tắt tại: System Settings → [Tên bạn] → iCloud → Private Relay → Off" ;;
+    off) ok "iCloud Private Relay đang tắt" ;;
+    *)   warn "Không đọc được trạng thái iCloud Private Relay. Hãy kiểm tra thủ công: System Settings → [Tên bạn] → iCloud → Private Relay → Off" ;;
+  esac
+}
+
 # =============================================================================
 #  1. Cài đặt / đổi proxy
 # =============================================================================
@@ -284,7 +308,7 @@ do_setup() {
       echo "Cài lúc: $(date)"
     } > "$INFO"
     echo
-    warn "Nhớ tắt iCloud Private Relay: System Settings → [Tên bạn] → iCloud → Private Relay → Off"
+    check_private_relay
     warn "Mở lại Safari / Discord để app nhận kết nối mới."
   else
     err "Proxy chưa áp dụng được (IP hiện tại: ${ip:-không có mạng})."
@@ -307,6 +331,8 @@ do_status() {
   echo "   IP hiện tại của máy:"
   curl -s --max-time 10 https://ipinfo.io/json 2>/dev/null \
     | grep -E '"(ip|city|country|org)"' | sed 's/^ */   /'
+  echo
+  check_private_relay
 }
 
 # =============================================================================
